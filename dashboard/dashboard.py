@@ -1,6 +1,5 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from textwrap import dedent
 import anthropic
 import json
 import os
@@ -50,6 +49,7 @@ st.markdown("""
     }
     .dept-name { font-weight: 700; color: #1A2E4A; font-size: 0.9rem; }
     .dept-beds { font-size: 0.8rem; color: #4A5568; margin-top: 2px; }
+    .dept-staff { font-size: 0.78rem; color: #4A5568; margin-top: 2px; }
     .beds-ok   { color: #276749; font-weight: 700; }
     .beds-warn { color: #B7580A; font-weight: 700; }
     .beds-full { color: #9B2335; font-weight: 700; }
@@ -132,6 +132,44 @@ st.markdown("""
 # ── ESI helpers ───────────────────────────────────────────────────────
 ESI_LABELS = {1: "Immediate", 2: "Emergent", 3: "Urgent", 4: "Less Urgent", 5: "Non-Urgent"}
 
+DEPT_CAPABILITIES = {
+    "Resus": (
+        "Full resuscitation bay. Handles immediately life-threatening conditions — "
+        "cardiac arrest, major trauma, severe sepsis, anaphylaxis, stroke with active deterioration. "
+        "Requires Registrar or Consultant present. Highest staff-to-patient ratio. "
+        "Typically 4 beds. Each patient requires near-constant clinical attention."
+    ),
+    "Majors": (
+        "Main ED treatment area for serious but not immediately life-threatening cases. "
+        "Handles ESI 2-3 patients — chest pain, significant infections, fractures, "
+        "acute neurological symptoms, moderate respiratory distress. "
+        "Requires at least SHO cover; Registrar preferable for ESI 2. "
+        "Can manage higher patient volumes than Resus."
+    ),
+    "Minors": (
+        "Fast-track area for low-acuity presentations. "
+        "ESI 4-5 patients — minor lacerations, sprains, mild infections, simple complaints. "
+        "SHO or ACCP can manage independently. High throughput expected. "
+        "Not appropriate for any patient who may deteriorate."
+    ),
+    "Paeds": (
+        "Dedicated paediatric stream for patients under 16. "
+        "Age-appropriate equipment, drug dosing, and environment. "
+        "Requires at least one Paeds-trained nurse and preferably a Paeds-trained doctor. "
+        "If no Paeds-trained staff are available, children should be routed to Majors with a flag. "
+        "Handles full ESI range 1-5 for children."
+    ),
+}
+
+NHS_GRADES = {
+    "consultant": "Most senior. Overall clinical responsibility. Can manage any ESI level.",
+    "registrar":  "Senior trainee (ST4+). Can lead Resus and Majors independently.",
+    "sho":        "Middle grade (CT1-3/ST1-3). Can manage Majors and Minors. Needs Registrar backup for ESI 1.",
+    "fy2":        "Foundation Year 2. Can manage Minors. Needs senior supervision for Majors.",
+    "fy1":        "Foundation Year 1. Limited ED scope. Minors only with direct supervision.",
+    "accp":       "Advanced Clinical Practitioner. Senior non-doctor. Can manage Majors and Minors independently.",
+}
+
 def esi_badge(score):
     return f'<span class="esi-badge badge-{score}">ESI {score} — {ESI_LABELS[score]}</span>'
 
@@ -150,7 +188,17 @@ def time_ago(dt):
     else:
         return f"{mins} mins ago"
 
-# ── Mock patient pool (simulates incoming WebSocket events) ───────────
+def get_queue_depth():
+    """Returns count of active (non-seen) allocated patients per department."""
+    depth = {"Resus": 0, "Majors": 0, "Minors": 0, "Paeds": 0}
+    for p in st.session_state.patients:
+        if not p.get("seen") and p.get("allocation"):
+            dept = p["allocation"].get("assigned_department")
+            if dept in depth:
+                depth[dept] += 1
+    return depth
+
+# ── Mock patient pool ─────────────────────────────────────────────────
 MOCK_INCOMING = [
     {
         "name": "David Okafor", "age": 45, "gender": "Male",
@@ -210,7 +258,6 @@ MOCK_INCOMING = [
 ]
 
 def get_next_mock_patient():
-    """Returns a new mock patient not already in the queue."""
     existing_names = {p["name"] for p in st.session_state.patients}
     pool = [p for p in MOCK_INCOMING if p["name"] not in existing_names]
     if not pool:
@@ -225,58 +272,102 @@ def get_next_mock_patient():
     }
 
 # ── AI Allocation Model ───────────────────────────────────────────────
-def run_allocation_model(patient, allotment, wait_times):
+def build_allotment_context(allotment, wait_times, queue_depth, paeds_trained):
+    """Builds rich dynamic context string for the prompt."""
+    lines = []
+    for dept, data in allotment.items():
+        staff = data["staff"]
+        staff_lines = []
+        for grade, count in staff.items():
+            if count > 0:
+                staff_lines.append(f"{count} {grade.upper()}")
+        staff_str = ", ".join(staff_lines) if staff_lines else "No doctors on shift"
+
+        paeds_note = ""
+        if dept == "Paeds":
+            paeds_note = f" | Paeds-trained staff on shift: {'YES' if paeds_trained else 'NO — route children to Majors with flag'}"
+
+        lines.append(
+            f"  {dept}:\n"
+            f"    Beds: {data['available']} available / {data['total']} total\n"
+            f"    Doctors: {staff_str}\n"
+            f"    Nurses: {data['nurses']}\n"
+            f"    Current queue depth: {queue_depth.get(dept, 0)} active patients{paeds_note}"
+        )
+
+    wait_lines = "\n".join([f"    {k}: {v} mins" for k, v in wait_times.items()])
+    return "\n".join(lines) + f"\n\n  Current estimated wait times:\n{wait_lines}"
+
+def build_department_knowledge():
+    """Builds stable medical knowledge section for the prompt."""
+    dept_lines = []
+    for dept, desc in DEPT_CAPABILITIES.items():
+        dept_lines.append(f"  {dept}: {desc}")
+
+    grade_lines = []
+    for grade, desc in NHS_GRADES.items():
+        grade_lines.append(f"  {grade.upper()}: {desc}")
+
+    return "\n".join(dept_lines), "\n".join(grade_lines)
+
+def run_allocation_model(patient, allotment, wait_times, paeds_trained):
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-    allotment_text = "\n".join([
-        f"  {dept}: {data['available']} beds available / {data['total']} total, "
-        f"{data['doctors']} doctors, {data['nurses']} nurses"
-        for dept, data in allotment.items()
-    ])
-    wait_text = ", ".join([f"{k}={v}min" for k, v in wait_times.items()])
+    queue_depth   = get_queue_depth()
+    dept_knowledge, grade_knowledge = build_department_knowledge()
+    allotment_context = build_allotment_context(
+        allotment, wait_times, queue_depth, paeds_trained
+    )
 
-    prompt = f"""
-You are an ED triage allocation assistant for TrivaMed.
-Given a patient's triage result and the current department allotment state,
-return a JSON allocation decision. Follow these rules:
-- ESI 1 → Resus only
-- ESI 2 with cardiac/stroke red flags → Resus if available, else Majors
-- ESI 2 with no red flags, age < 16 → Paeds
-- ESI 2 with no red flags, age >= 16 → Majors
-- ESI 3 → Majors if available, else Minors
-- ESI 4 and 5 → Minors
-- If target department has 0 beds, assign to next best and explain in rationale
-- escalation_required = true if ESI 1 or red flags present
+    prompt = f"""You are a senior NHS ED triage allocation assistant for TrivaMed.
+Your role is to assign each patient to the most appropriate department and bed,
+based on clinical need, current department capacity, and staff capability.
+You must reason carefully — your decision directly affects patient safety.
 
-Patient Triage Data:
-  Name: {patient['name']}
-  Age: {patient['age']}
-  ESI Score: {patient['esi_score']}
-  Red Flags: {patient['red_flags']}
-  Chief Complaint: {patient['chief_complaint']}
-  Symptoms: {', '.join(patient['symptoms'])}
-  Pain Score: {patient['pain_score']}/10
-  Worsening: {patient['is_worsening']}
-  Conditions: {', '.join(patient['conditions']) or 'None'}
-  Medications: {', '.join(patient['medications']) or 'None'}
-  Allergies: {', '.join(patient['allergies']) or 'None'}
-  AI Summary: {patient['ai_summary']}
+━━━ DEPARTMENT CAPABILITIES (stable medical knowledge) ━━━
+{dept_knowledge}
 
-Current Allotment State:
-{allotment_text}
+━━━ NHS DOCTOR GRADES (stable medical knowledge) ━━━
+{grade_knowledge}
 
-Wait Times: {wait_text}
+━━━ CURRENT DEPARTMENT STATE (this shift) ━━━
+{allotment_context}
 
-Respond ONLY with a valid JSON object, no explanation, no markdown, no extra text.
-Format:
+━━━ PATIENT TRIAGE DATA ━━━
+  Name:             {patient['name']}
+  Age:              {patient['age']}
+  Gender:           {patient['gender']}
+  ESI Score:        {patient['esi_score']} — {ESI_LABELS[patient['esi_score']]}
+  Red Flags:        {', '.join(patient['red_flags']) if patient['red_flags'] else 'None'}
+  Chief Complaint:  {patient['chief_complaint']}
+  Symptoms:         {', '.join(patient['symptoms'])}
+  Pain Score:       {patient['pain_score']}/10
+  Worsening:        {'Yes' if patient['is_worsening'] else 'No'}
+  Conditions:       {', '.join(patient['conditions']) or 'None'}
+  Medications:      {', '.join(patient['medications']) or 'None'}
+  Allergies:        {', '.join(patient['allergies']) or 'None'}
+  Clinical Summary: {patient['ai_summary']}
+
+━━━ YOUR TASK ━━━
+Reason through the following before deciding:
+1. What does this patient clinically need — what level of care and what grade of doctor?
+2. Which department is most appropriate given their presentation?
+3. Is that department able to safely receive this patient right now, given bed availability,
+   current queue depth, and the grades of staff currently on shift?
+4. If the ideal department cannot safely receive this patient, what is the next best option
+   and why?
+5. Does this patient require escalation to a senior clinician immediately?
+
+Return ONLY a valid JSON object. No explanation, no markdown, no extra text.
 {{
-  "final_priority": <integer 1-5>,
-  "assigned_department": "<Resus|Majors|Minors|Paeds>",
-  "assigned_bed": "<bed identifier e.g. R1, M3, Mi5, P2>",
-  "rationale": "<one or two sentence plain-English explanation for the nurse>",
-  "escalation_required": <true|false>
-}}
-"""
+  "final_priority":       <integer 1-5>,
+  "assigned_department":  "<Resus|Majors|Minors|Paeds>",
+  "assigned_bed":         "<bed identifier e.g. R1, M3, Mi5, P2>",
+  "rationale":            "<2-3 sentences explaining the clinical reasoning for the nurse>",
+  "escalation_required":  <true|false>,
+  "required_grade":       "<minimum NHS doctor grade needed for this patient>"
+}}"""
+
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1000,
@@ -287,14 +378,27 @@ Format:
 # ── Session state ─────────────────────────────────────────────────────
 if "allotment" not in st.session_state:
     st.session_state.allotment = {
-        "Resus":  {"total": 4,  "available": 2, "doctors": 3, "nurses": 4},
-        "Majors": {"total": 12, "available": 5, "doctors": 2, "nurses": 6},
-        "Minors": {"total": 10, "available": 8, "doctors": 1, "nurses": 3},
-        "Paeds":  {"total": 6,  "available": 3, "doctors": 1, "nurses": 2},
+        "Resus": {
+            "total": 4, "available": 2, "nurses": 4,
+            "staff": {"consultant": 1, "registrar": 1, "sho": 1, "fy2": 0, "fy1": 0, "accp": 0},
+        },
+        "Majors": {
+            "total": 12, "available": 5, "nurses": 6,
+            "staff": {"consultant": 0, "registrar": 1, "sho": 2, "fy2": 1, "fy1": 0, "accp": 1},
+        },
+        "Minors": {
+            "total": 10, "available": 8, "nurses": 3,
+            "staff": {"consultant": 0, "registrar": 0, "sho": 1, "fy2": 1, "fy1": 1, "accp": 1},
+        },
+        "Paeds": {
+            "total": 6, "available": 3, "nurses": 2,
+            "staff": {"consultant": 0, "registrar": 1, "sho": 1, "fy2": 0, "fy1": 0, "accp": 0},
+        },
     }
     st.session_state.wait_times = {
         "ESI 1": 0, "ESI 2": 8, "ESI 3": 35, "ESI 4": 65, "ESI 5": 110
     }
+    st.session_state.paeds_trained = True
 
 if "patients" not in st.session_state:
     now = datetime.now()
@@ -377,8 +481,8 @@ if st.session_state.auto_refresh:
             st.session_state.last_arrival = datetime.now()
 
 # ── Header ────────────────────────────────────────────────────────────
-total    = len(st.session_state.patients)
-critical = sum(1 for p in st.session_state.patients if p["esi_score"] <= 2)
+total    = len([p for p in st.session_state.patients if not p.get("seen")])
+critical = sum(1 for p in st.session_state.patients if p["esi_score"] <= 2 and not p.get("seen"))
 
 st.markdown(f"""
 <div class="header-bar">
@@ -404,40 +508,69 @@ st.markdown(f"""
 # ── Sidebar ───────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<p class="section-title">⚕️ Allotment Panel</p>', unsafe_allow_html=True)
-    st.markdown("**Bed Availability**")
 
+    # ── Department overview cards ─────────────────────────────────────
+    st.markdown("**Department Status**")
+    queue_depth = get_queue_depth()
     for dept, data in st.session_state.allotment.items():
         avail      = data["available"]
         total_beds = data["total"]
         pct        = avail / total_beds
         bed_class  = "beds-ok" if pct > 0.5 else "beds-warn" if pct > 0.2 else "beds-full"
-        st.markdown(f"""
-        <div class="dept-card">
-            <div class="dept-name">{dept}</div>
-            <div class="dept-beds">
-                Beds: <span class="{bed_class}">{avail} available</span> / {total_beds} total
-                &nbsp;|&nbsp; 👨‍⚕️ {data['doctors']}  &nbsp;|&nbsp; 👩‍⚕️ {data['nurses']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        staff      = data["staff"]
+        senior     = staff.get("consultant", 0) + staff.get("registrar", 0)
+        senior_str = f"{'✅' if senior > 0 else '⚠️'} {senior} senior"
+        paeds_flag = " | 👶 Paeds-trained" if dept == "Paeds" and st.session_state.paeds_trained else ""
+        st.markdown(
+            f'<div class="dept-card">'
+            f'<div class="dept-name">{dept}</div>'
+            f'<div class="dept-beds">Beds: <span class="{bed_class}">{avail} free</span> / {total_beds} '
+            f'| Queue: {queue_depth.get(dept, 0)}</div>'
+            f'<div class="dept-staff">{senior_str} | 👩‍⚕️ {data["nurses"]} nurses{paeds_flag}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
     st.divider()
-    st.markdown("**Update Availability**")
+
+    # ── Update department ─────────────────────────────────────────────
+    st.markdown("**Update Department**")
     dept_choice = st.selectbox("Department", list(st.session_state.allotment.keys()))
-    new_avail   = st.number_input("Available beds", min_value=0,
-                                   max_value=st.session_state.allotment[dept_choice]["total"],
-                                   value=st.session_state.allotment[dept_choice]["available"])
-    new_doctors = st.number_input("Doctors on shift", min_value=0, max_value=20,
-                                   value=st.session_state.allotment[dept_choice]["doctors"])
-    new_nurses  = st.number_input("Nurses on shift", min_value=0, max_value=40,
-                                   value=st.session_state.allotment[dept_choice]["nurses"])
-    if st.button("Update", use_container_width=True):
+    d = st.session_state.allotment[dept_choice]
+
+    new_avail  = st.number_input("Available beds", min_value=0,
+                                  max_value=d["total"], value=d["available"])
+    new_nurses = st.number_input("Nurses on shift", min_value=0,
+                                  max_value=40, value=d["nurses"])
+
+    st.markdown("**Doctors on shift by grade**")
+    new_staff = {}
+    cols = st.columns(2)
+    grades = list(NHS_GRADES.keys())
+    for i, grade in enumerate(grades):
+        with cols[i % 2]:
+            new_staff[grade] = st.number_input(
+                grade.upper(), min_value=0, max_value=10,
+                value=d["staff"].get(grade, 0),
+                key=f"staff_{dept_choice}_{grade}"
+            )
+
+    if dept_choice == "Paeds":
+        st.session_state.paeds_trained = st.toggle(
+            "Paeds-trained staff on shift",
+            value=st.session_state.paeds_trained
+        )
+
+    if st.button("Update Department", use_container_width=True):
         st.session_state.allotment[dept_choice]["available"] = new_avail
-        st.session_state.allotment[dept_choice]["doctors"]   = new_doctors
         st.session_state.allotment[dept_choice]["nurses"]    = new_nurses
+        st.session_state.allotment[dept_choice]["staff"]     = new_staff
         st.success(f"{dept_choice} updated.")
+        st.rerun()
 
     st.divider()
+
+    # ── Wait times ────────────────────────────────────────────────────
     st.markdown("**Estimated Wait Times (mins)**")
     for level in st.session_state.wait_times:
         st.session_state.wait_times[level] = st.number_input(
@@ -446,13 +579,15 @@ with st.sidebar:
         )
 
     st.divider()
+
+    # ── AI Allocation ─────────────────────────────────────────────────
     st.markdown("**AI Allocation**")
-    st.caption("Run the AI model to assign departments and beds to all unallocated patients.")
+    st.caption("Assigns department, bed and required doctor grade to all unallocated patients.")
 
     if st.button("🤖 Run Allocation", use_container_width=True, type="primary"):
         unallocated = [p for p in st.session_state.patients if not p["allocated"]]
         if not unallocated:
-            st.info("All patients are already allocated.")
+            st.info("All patients already allocated.")
         else:
             with st.spinner(f"Allocating {len(unallocated)} patient(s)..."):
                 for patient in unallocated:
@@ -460,7 +595,8 @@ with st.sidebar:
                         result = run_allocation_model(
                             patient,
                             st.session_state.allotment,
-                            st.session_state.wait_times
+                            st.session_state.wait_times,
+                            st.session_state.paeds_trained,
                         )
                         patient["allocation"] = result
                         patient["allocated"]  = True
@@ -475,6 +611,7 @@ with st.sidebar:
                             "assigned_bed": "—",
                             "rationale": f"Allocation failed: {str(e)}",
                             "escalation_required": False,
+                            "required_grade": "Unknown",
                         }
                         patient["allocated"] = True
 
@@ -486,8 +623,10 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+
+    # ── Live updates ──────────────────────────────────────────────────
     st.markdown("**Live Updates**")
-    st.caption("When enabled, a new mock patient arrives every 30 seconds.")
+    st.caption("Simulates new patients arriving every 30 seconds.")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("▶ Start", use_container_width=True,
@@ -504,7 +643,6 @@ with st.sidebar:
 # ── Main — Patient Queue ──────────────────────────────────────────────
 st.markdown('<p class="section-title">🚨 Patient Queue</p>', unsafe_allow_html=True)
 
-# Filter out seen patients
 active_patients = [p for p in st.session_state.patients if not p.get("seen", False)]
 seen_patients   = [p for p in st.session_state.patients if p.get("seen", False)]
 
@@ -517,13 +655,14 @@ for patient in active_patients:
     ago   = time_ago(patient["submitted_at"])
     alloc = patient.get("allocation")
 
-    is_new = (datetime.now() - patient["submitted_at"]).total_seconds() < 60
+    is_new  = (datetime.now() - patient["submitted_at"]).total_seconds() < 60
     new_tag = '<span class="new-badge">NEW</span>' if is_new else ""
 
     if alloc:
         dept_text  = f'<span class="allocation-badge">🏥 {alloc["assigned_department"]} — Bed {alloc["assigned_bed"]}</span>'
+        grade_text = f'<span class="allocation-badge">👨‍⚕️ {alloc.get("required_grade", "").upper()}</span>'
         esc_text   = '<span class="escalation-badge">🚨 ESCALATION</span>' if alloc["escalation_required"] else ""
-        alloc_html = f'<div style="margin-top:6px;">{dept_text}{esc_text}</div>'
+        alloc_html = f'<div style="margin-top:6px;">{dept_text}{grade_text}{esc_text}</div>'
     else:
         alloc_html = '<div style="margin-top:6px; font-size:0.78rem; color:#718096;">⏳ Awaiting allocation</div>'
 
@@ -565,7 +704,8 @@ for patient in active_patients:
             if alloc:
                 st.markdown("**Allocation Rationale**")
                 st.success(
-                    f"**{alloc['assigned_department']} — Bed {alloc['assigned_bed']}**\n\n"
+                    f"**{alloc['assigned_department']} — Bed {alloc['assigned_bed']}**  \n"
+                    f"Required grade: **{alloc.get('required_grade', '—').upper()}**  \n\n"
                     f"{alloc['rationale']}"
                 )
 
@@ -576,20 +716,18 @@ for patient in active_patients:
                 st.metric("Priority", f"ESI {alloc['final_priority']}")
             else:
                 st.metric("Priority", f"ESI {esi}")
-
             st.write("")
-            if st.button(f"✅ Mark as Seen", key=f"seen_{patient['session_id']}",
+            if st.button("✅ Mark as Seen", key=f"seen_{patient['session_id']}",
                          use_container_width=True, type="primary"):
                 patient["seen"] = True
-                # Free up the bed when patient is seen
                 if alloc and alloc["assigned_department"] in st.session_state.allotment:
-                    dept = alloc["assigned_department"]
+                    dept       = alloc["assigned_department"]
                     total_beds = st.session_state.allotment[dept]["total"]
                     current    = st.session_state.allotment[dept]["available"]
                     st.session_state.allotment[dept]["available"] = min(total_beds, current + 1)
                 st.rerun()
 
-# ── Seen patients (collapsed) ─────────────────────────────────────────
+# ── Seen patients ─────────────────────────────────────────────────────
 if seen_patients:
     st.divider()
     with st.expander(f"✅ Seen patients ({len(seen_patients)})"):
