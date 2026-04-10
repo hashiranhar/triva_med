@@ -29,3 +29,4 @@ class Submission(Base):
     current_medications = Column(JSON, nullable=False)
     allergies = Column(JSON, nullable=False)
     recent_surgeries = Column(Text, nullable=True)
+    seen = Column(Boolean, default=False, nullable=True)

@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, date
 from uuid import uuid4
+from sqlalchemy import text
 from sqlalchemy.orm import Session as DBSession
 
 from backend.schemas import (
@@ -15,6 +17,24 @@ from backend import models
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TrivaMed Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def run_migrations():
+    """Add any missing columns to existing SQLite tables."""
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(submissions)"))
+        cols = [row[1] for row in result]
+        if "seen" not in cols:
+            conn.execute(text("ALTER TABLE submissions ADD COLUMN seen BOOLEAN DEFAULT 0"))
+            conn.commit()
 
 
 def calculate_age(dob: date) -> int:
@@ -80,8 +100,12 @@ def submit_patient_form(submission: PatientSubmission, db: DBSession = Depends(g
 
 @app.get("/api/v1/queue")
 def get_patient_queue(db: DBSession = Depends(get_db)):
-    """Dashboard polls this to get all waiting patients."""
-    submissions = db.query(models.Submission).all()
+    """Dashboard polls this to get all waiting (unseen) patients."""
+    submissions = (
+        db.query(models.Submission)
+        .filter((models.Submission.seen == False) | (models.Submission.seen == None))
+        .all()
+    )
     return [
         {
             "session_id": s.session_id,
@@ -102,6 +126,17 @@ def get_patient_queue(db: DBSession = Depends(get_db)):
         }
         for s in submissions
     ]
+
+
+@app.patch("/api/v1/submission/{session_id}/seen")
+def mark_patient_seen(session_id: str, db: DBSession = Depends(get_db)):
+    """Mark a patient as seen so they leave the queue."""
+    sub = db.query(models.Submission).filter_by(session_id=session_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    sub.seen = True
+    db.commit()
+    return {"status": "ok", "session_id": session_id}
 
 
 @app.get("/api/v1/session/{session_id}/status")
