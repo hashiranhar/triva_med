@@ -5,83 +5,109 @@ from enum import Enum
 from uuid import UUID
 
 
-class HealthResponse(BaseModel):
-    status: str
-    timestamp: datetime
-
-
-class SessionResponse(BaseModel):
-    session_id: UUID
-    created_at: datetime
-
-
-# --- Enums ---
+# ── Enums ──────────────────────────────────────────────────────────────
 
 class Gender(str, Enum):
     male = "male"
     female = "female"
-    other = "other"
+    non_binary = "non_binary"
     prefer_not_to_say = "prefer_not_to_say"
 
 
-class RedFlag(str, Enum):
-    stroke = "stroke"
-    sepsis = "sepsis"
-    mi = "MI"
-    none = "none"
+class PreferredLanguage(str, Enum):
+    en = "en"
+    es = "es"
+    ar = "ar"
 
 
-class TriageStatus(str, Enum):
-    pending = "pending"
-    processed = "processed"
-    error = "error"
+class OnsetDuration(str, Enum):
+    today = "today"
+    this_week = "this_week"
+    this_month = "this_month"
+    longer = "longer"
 
 
-# --- Nested models ---
+class DailyImpact(str, Enum):
+    not_at_all = "not_at_all"
+    a_little = "a_little"
+    a_lot = "a_lot"
+    cannot_function = "cannot_function"
+
+
+class ClinicianGenderPreference(str, Enum):
+    male = "male"
+    female = "female"
+    no_preference = "no_preference"
+
+
+class FamilyInvolvement(str, Enum):
+    yes = "yes"
+    no = "no"
+    not_now = "not_now"
+
+
+class MHSymptom(str, Enum):
+    sad_or_hopeless = "sad_or_hopeless"
+    anxiety_or_panic = "anxiety_or_panic"
+    difficulty_sleeping = "difficulty_sleeping"
+    hearing_or_seeing_things = "hearing_or_seeing_things"
+    thoughts_of_self_harm = "thoughts_of_self_harm"
+    thoughts_of_harming_others = "thoughts_of_harming_others"
+    difficulty_eating = "difficulty_eating"
+    feeling_disconnected = "feeling_disconnected"
+    overwhelming_anger = "overwhelming_anger"
+    substance_use = "substance_use"
+
+
+# ── Nested models ──────────────────────────────────────────────────────
 
 class PatientDemographics(BaseModel):
     first_name: str
     last_name: str
     date_of_birth: date
     gender: Gender
-    contact_number: Optional[str] = None
+    preferred_language: PreferredLanguage
+    interpreter_needed: bool
 
 
-class ChiefComplaint(BaseModel):
-    description: str
-    onset_time: datetime
-    is_trauma: bool
+class PresentingConcern(BaseModel):
+    raw_concern_text: str           # free text in their language
+    onset: OnsetDuration
+    previous_episode: bool
+    is_crisis: bool
 
 
-class Symptom(BaseModel):
-    name: str
-    severity: int
-    location: Optional[str] = None
-    duration_minutes: int
+class MentalHealthSymptoms(BaseModel):
+    distress_level: int             # 1–5
+    symptoms: List[MHSymptom]
+    daily_impact: DailyImpact
 
 
-class SymptomDetails(BaseModel):
-    symptoms: List[Symptom]
-    pain_score: int
-    is_worsening: bool
-
-
-class MedicalHistory(BaseModel):
-    existing_conditions: List[str]
+class ClinicalBackground(BaseModel):
+    current_treatment: bool
     current_medications: List[str]
+    other_conditions: List[str]
     allergies: List[str]
-    recent_surgeries: Optional[str] = None
+    previous_mh_hospital: bool
 
 
-# --- Request / Response models ---
+class CulturalNeeds(BaseModel):
+    cultural_notes: Optional[str] = None
+    clinician_gender_preference: ClinicianGenderPreference
+    family_involvement: FamilyInvolvement
+    additional_notes: Optional[str] = None
+
+
+# ── Request / Response models ──────────────────────────────────────────
 
 class PatientSubmission(BaseModel):
     session_id: UUID4
     submitted_at: datetime
     demographics: PatientDemographics
-    chief_complaint: ChiefComplaint
-    symptoms: SymptomDetails
-    medical_history: MedicalHistory
+    presenting_concern: PresentingConcern
+    mental_health_symptoms: MentalHealthSymptoms
+    clinical_background: ClinicalBackground
+    cultural_needs: CulturalNeeds
 
 
 class SubmissionResponse(BaseModel):
@@ -90,12 +116,11 @@ class SubmissionResponse(BaseModel):
     message: str
 
 
-class TriageResult(BaseModel):
-    session_id: UUID4
-    esi_score: int
-    red_flags: List[RedFlag]
-    ai_summary: str
-    submitted_at: datetime
-    patient_name: str
-    age: int
-    chief_complaint_description: str
+class HealthResponse(BaseModel):
+    status: str
+    timestamp: datetime
+
+
+class SessionResponse(BaseModel):
+    session_id: UUID
+    created_at: datetime
