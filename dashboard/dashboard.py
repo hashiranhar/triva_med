@@ -6,9 +6,12 @@ import os
 import time
 import uuid
 import random
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="TrivaMed — ED Dashboard",
@@ -257,19 +260,154 @@ MOCK_INCOMING = [
     },
 ]
 
-def get_next_mock_patient():
-    existing_names = {p["name"] for p in st.session_state.patients}
-    pool = [p for p in MOCK_INCOMING if p["name"] not in existing_names]
-    if not pool:
-        return None
-    template = random.choice(pool)
+# ── Backend integration ───────────────────────────────────────────────
+
+def infer_esi(pain_score: int, is_worsening: bool, chief_complaint: str, symptom_names: list) -> int:
+    text = (chief_complaint + " " + " ".join(symptom_names)).lower()
+    if any(k in text for k in ["cardiac arrest", "not breathing", "anaphylaxis", "throat swelling"]):
+        return 1
+    if pain_score >= 9 and is_worsening:
+        return 1
+    high_risk = ["chest pain", "vision loss", "facial droop", "slurred speech", "arm weakness",
+                 "jaw pain", "thunderclap", "sepsis", "confusion", "rapid breathing",
+                 "difficulty breathing", "stroke", "heart attack"]
+    if any(k in text for k in high_risk) or (pain_score >= 7 and is_worsening):
+        return 2
+    if pain_score >= 4 or is_worsening:
+        return 3
+    if pain_score >= 2:
+        return 4
+    return 5
+
+
+def infer_red_flags(chief_complaint: str, symptom_names: list) -> list:
+    text = (chief_complaint + " " + " ".join(symptom_names)).lower()
+    flags = []
+    if any(k in text for k in ["stroke", "vision loss", "facial droop", "slurred speech",
+                                "arm weakness", "thunderclap"]):
+        flags.append("stroke")
+    if any(k in text for k in ["chest pain", "jaw pain", "heart attack", "myocardial"]):
+        flags.append("MI")
+    if any(k in text for k in ["sepsis", "high fever", "confusion", "rapid breathing"]):
+        flags.append("sepsis")
+    return flags
+
+
+def generate_summary(name: str, age: int, gender: str, complaint: str,
+                     pain_score: int, is_worsening: bool) -> str:
+    note = " Symptoms worsening." if is_worsening else ""
+    return (f"{age}-year-old {gender.lower()} presenting with {complaint.lower()}. "
+            f"Pain {pain_score}/10.{note}")
+
+
+def transform_backend_patient(bp: dict) -> dict:
+    """Convert a backend queue record into the dashboard patient format."""
+    symptom_names = [
+        s["name"] if isinstance(s, dict) else s
+        for s in bp.get("symptoms", [])
+    ]
+    esi   = infer_esi(bp["pain_score"], bp["is_worsening"], bp["chief_complaint"], symptom_names)
+    flags = infer_red_flags(bp["chief_complaint"], symptom_names)
+    summary = generate_summary(bp["patient_name"], bp["age"], bp["gender"],
+                               bp["chief_complaint"], bp["pain_score"], bp["is_worsening"])
     return {
-        **template,
-        "session_id": str(uuid.uuid4()),
-        "submitted_at": datetime.now(),
-        "allocated": False,
-        "allocation": None,
+        "session_id":     bp["session_id"],
+        "name":           bp["patient_name"],
+        "age":            bp["age"],
+        "gender":         bp["gender"].capitalize(),
+        "chief_complaint": bp["chief_complaint"],
+        "esi_score":      esi,
+        "red_flags":      flags,
+        "ai_summary":     summary,
+        "pain_score":     bp["pain_score"],
+        "is_worsening":   bp["is_worsening"],
+        "symptoms":       symptom_names,
+        "conditions":     bp.get("existing_conditions", []),
+        "medications":    bp.get("current_medications", []),
+        "allergies":      bp.get("allergies", []),
+        "submitted_at":   datetime.fromisoformat(bp["submitted_at"]),
+        "allocated":      False,
+        "allocation":     None,
     }
+
+
+def fetch_queue_from_backend() -> list:
+    resp = requests.get(f"{BACKEND_URL}/api/v1/queue", timeout=5)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def mark_seen_on_backend(session_id: str):
+    requests.patch(f"{BACKEND_URL}/api/v1/submission/{session_id}/seen", timeout=5)
+
+
+def mock_patient_to_submission(mock: dict) -> dict:
+    """Convert a MOCK_INCOMING entry to the backend PatientSubmission payload."""
+    parts = mock["name"].split(" ", 1)
+    first, last = parts[0], parts[1] if len(parts) > 1 else "Unknown"
+    birth_year = datetime.now().year - mock["age"]
+    gender = {"Male": "male", "Female": "female"}.get(mock.get("gender", ""), "other")
+    now = datetime.now()
+    symptoms_payload = [
+        {"name": s, "severity": mock["pain_score"],
+         "location": None, "duration_minutes": random.randint(10, 60)}
+        for s in mock["symptoms"]
+    ]
+    # Reserve a session first
+    sess_resp = requests.post(f"{BACKEND_URL}/api/v1/session/start", timeout=5)
+    sess_resp.raise_for_status()
+    session_id = sess_resp.json()["session_id"]
+
+    return {
+        "session_id": session_id,
+        "submitted_at": now.isoformat(),
+        "demographics": {
+            "first_name": first, "last_name": last,
+            "date_of_birth": f"{birth_year}-06-15",
+            "gender": gender,
+        },
+        "chief_complaint": {
+            "description": mock["chief_complaint"],
+            "onset_time": (now - timedelta(minutes=random.randint(5, 60))).isoformat(),
+            "is_trauma": False,
+        },
+        "symptoms": {
+            "symptoms": symptoms_payload,
+            "pain_score": mock["pain_score"],
+            "is_worsening": mock["is_worsening"],
+        },
+        "medical_history": {
+            "existing_conditions": mock.get("conditions", []),
+            "current_medications": mock.get("medications", []),
+            "allergies":           mock.get("allergies", []),
+            "recent_surgeries":    None,
+        },
+    }
+
+
+def submit_mock_to_backend(mock: dict) -> bool:
+    """Submit a mock patient entry to the backend. Returns True on success."""
+    payload = mock_patient_to_submission(mock)
+    resp = requests.post(f"{BACKEND_URL}/api/v1/submission", json=payload, timeout=5)
+    resp.raise_for_status()
+    return True
+
+
+def sync_patients_from_backend():
+    """Pull the live queue from backend and merge with local allocation data."""
+    backend_records = fetch_queue_from_backend()
+    allocations = st.session_state.get("allocations", {})
+    patients = []
+    for bp in backend_records:
+        p = transform_backend_patient(bp)
+        sid = p["session_id"]
+        if sid in allocations:
+            p["allocation"] = allocations[sid]
+            p["allocated"]  = True
+        patients.append(p)
+    patients.sort(key=lambda x: x["allocation"]["final_priority"]
+                  if x["allocation"] else x["esi_score"])
+    st.session_state.patients = patients
 
 # ── AI Allocation Model ───────────────────────────────────────────────
 def build_allotment_context(allotment, wait_times, queue_depth, paeds_trained):
@@ -400,66 +538,86 @@ if "allotment" not in st.session_state:
     }
     st.session_state.paeds_trained = True
 
+INITIAL_SEED_PATIENTS = [
+    {
+        "name": "John Smith", "age": 58, "gender": "Male",
+        "chief_complaint": "Severe chest pain radiating to left arm",
+        "pain_score": 8, "is_worsening": True,
+        "symptoms": ["Chest pain", "Left arm pain", "Shortness of breath"],
+        "conditions": ["Hypertension"], "medications": ["Lisinopril"], "allergies": ["Penicillin"],
+    },
+    {
+        "name": "Sarah O'Brien", "age": 34, "gender": "Female",
+        "chief_complaint": "Thunderclap headache, worst of life, sudden onset",
+        "pain_score": 10, "is_worsening": False,
+        "symptoms": ["Severe headache", "Neck stiffness", "Photophobia"],
+        "conditions": [], "medications": [], "allergies": [],
+    },
+    {
+        "name": "Mohammed Al-Farsi", "age": 72, "gender": "Male",
+        "chief_complaint": "High fever, confusion, rapid breathing",
+        "pain_score": 4, "is_worsening": True,
+        "symptoms": ["Fever", "Confusion", "Rapid breathing", "Chills"],
+        "conditions": ["Diabetes", "COPD"], "medications": ["Metformin", "Salbutamol inhaler"],
+        "allergies": ["Sulfa drugs"],
+    },
+    {
+        "name": "Emily Clarke", "age": 8, "gender": "Female",
+        "chief_complaint": "Difficulty breathing, known asthma",
+        "pain_score": 5, "is_worsening": True,
+        "symptoms": ["Wheeze", "Shortness of breath", "Chest tightness"],
+        "conditions": ["Asthma"], "medications": ["Salbutamol", "Montelukast"], "allergies": [],
+    },
+    {
+        "name": "Patricia Nwosu", "age": 45, "gender": "Female",
+        "chief_complaint": "Sprained ankle after fall",
+        "pain_score": 5, "is_worsening": False,
+        "symptoms": ["Ankle pain", "Swelling", "Bruising"],
+        "conditions": [], "medications": [], "allergies": ["Ibuprofen"],
+    },
+]
+
+if "allocations" not in st.session_state:
+    st.session_state.allocations = {}
+
+if "backend_available" not in st.session_state:
+    st.session_state.backend_available = True
+
 if "patients" not in st.session_state:
-    now = datetime.now()
-    st.session_state.patients = [
-        {
-            "session_id": "aaa-001",
-            "name": "John Smith", "age": 58, "gender": "Male",
-            "chief_complaint": "Severe chest pain radiating to left arm",
-            "esi_score": 2, "red_flags": ["MI"],
-            "ai_summary": "58-year-old male with severe chest pain and left arm radiation. Onset 40 mins ago. Hypertensive. High suspicion of MI.",
-            "pain_score": 8, "is_worsening": True,
-            "symptoms": ["Chest pain", "Left arm pain", "Shortness of breath"],
-            "conditions": ["Hypertension"], "medications": ["Lisinopril"], "allergies": ["Penicillin"],
-            "submitted_at": now - timedelta(minutes=5), "allocated": False, "allocation": None,
-        },
-        {
-            "session_id": "aaa-002",
-            "name": "Sarah O'Brien", "age": 34, "gender": "Female",
-            "chief_complaint": "Sudden severe headache, worst of life",
-            "esi_score": 2, "red_flags": ["stroke"],
-            "ai_summary": "34-year-old female with thunderclap headache. Sudden onset, 10/10 severity. Stroke protocol warranted.",
-            "pain_score": 10, "is_worsening": False,
-            "symptoms": ["Severe headache", "Neck stiffness", "Photophobia"],
-            "conditions": [], "medications": [], "allergies": [],
-            "submitted_at": now - timedelta(minutes=12), "allocated": False, "allocation": None,
-        },
-        {
-            "session_id": "aaa-003",
-            "name": "Mohammed Al-Farsi", "age": 72, "gender": "Male",
-            "chief_complaint": "High fever, confusion, rapid breathing",
-            "esi_score": 1, "red_flags": ["sepsis"],
-            "ai_summary": "72-year-old male with fever 39.8C, acute confusion and tachypnoea. Sepsis screening required immediately.",
-            "pain_score": 4, "is_worsening": True,
-            "symptoms": ["Fever", "Confusion", "Rapid breathing", "Chills"],
-            "conditions": ["Diabetes", "COPD"], "medications": ["Metformin", "Salbutamol inhaler"], "allergies": ["Sulfa drugs"],
-            "submitted_at": now - timedelta(minutes=2), "allocated": False, "allocation": None,
-        },
-        {
-            "session_id": "aaa-004",
-            "name": "Emily Clarke", "age": 8, "gender": "Female",
-            "chief_complaint": "Difficulty breathing, known asthma",
-            "esi_score": 2, "red_flags": [],
-            "ai_summary": "8-year-old with acute asthma exacerbation. Using accessory muscles. Salbutamol given pre-arrival.",
-            "pain_score": 5, "is_worsening": True,
-            "symptoms": ["Wheeze", "Shortness of breath", "Chest tightness"],
-            "conditions": ["Asthma"], "medications": ["Salbutamol", "Montelukast"], "allergies": [],
-            "submitted_at": now - timedelta(minutes=18), "allocated": False, "allocation": None,
-        },
-        {
-            "session_id": "aaa-005",
-            "name": "Patricia Nwosu", "age": 45, "gender": "Female",
-            "chief_complaint": "Sprained ankle after fall",
-            "esi_score": 4, "red_flags": [],
-            "ai_summary": "45-year-old with right ankle sprain following a trip. Weight-bearing limited. X-ray likely needed.",
-            "pain_score": 5, "is_worsening": False,
-            "symptoms": ["Ankle pain", "Swelling", "Bruising"],
-            "conditions": [], "medications": [], "allergies": ["Ibuprofen"],
-            "submitted_at": now - timedelta(minutes=30), "allocated": False, "allocation": None,
-        },
-    ]
-    st.session_state.patients.sort(key=lambda x: x["esi_score"])
+    try:
+        sync_patients_from_backend()
+        # If the DB is empty, seed initial patients so the dashboard isn't blank
+        if not st.session_state.patients:
+            for seed in INITIAL_SEED_PATIENTS:
+                try:
+                    submit_mock_to_backend(seed)
+                except Exception:
+                    pass
+            sync_patients_from_backend()
+        st.session_state.backend_available = True
+    except Exception:
+        # Backend not reachable — fall back to in-memory data so the UI still works
+        st.session_state.backend_available = False
+        now = datetime.now()
+        st.session_state.patients = [
+            {
+                "session_id": f"local-{i}", "name": s["name"], "age": s["age"],
+                "gender": s["gender"], "chief_complaint": s["chief_complaint"],
+                "esi_score": infer_esi(s["pain_score"], s["is_worsening"],
+                                       s["chief_complaint"], s["symptoms"]),
+                "red_flags": infer_red_flags(s["chief_complaint"], s["symptoms"]),
+                "ai_summary": generate_summary(s["name"], s["age"], s["gender"],
+                                               s["chief_complaint"], s["pain_score"],
+                                               s["is_worsening"]),
+                "pain_score": s["pain_score"], "is_worsening": s["is_worsening"],
+                "symptoms": s["symptoms"], "conditions": s["conditions"],
+                "medications": s["medications"], "allergies": s["allergies"],
+                "submitted_at": now - timedelta(minutes=5 * (i + 1)),
+                "allocated": False, "allocation": None,
+            }
+            for i, s in enumerate(INITIAL_SEED_PATIENTS)
+        ]
+        st.session_state.patients.sort(key=lambda x: x["esi_score"])
 
 if "last_arrival" not in st.session_state:
     st.session_state.last_arrival = datetime.now()
@@ -467,18 +625,26 @@ if "last_arrival" not in st.session_state:
 if "auto_refresh" not in st.session_state:
     st.session_state.auto_refresh = False
 
-# ── Simulate new patient arriving every 30 seconds ────────────────────
+# ── Poll backend and simulate new arrivals ────────────────────────────
 if st.session_state.auto_refresh:
     seconds_since = (datetime.now() - st.session_state.last_arrival).total_seconds()
-    if seconds_since >= 30:
-        new_patient = get_next_mock_patient()
-        if new_patient:
-            st.session_state.patients.append(new_patient)
-            st.session_state.patients.sort(
-                key=lambda x: x["allocation"]["final_priority"]
-                if x["allocation"] else x["esi_score"]
-            )
-            st.session_state.last_arrival = datetime.now()
+    if seconds_since >= 30 and st.session_state.backend_available:
+        # Pick a mock patient not already in the queue and submit to backend
+        existing_names = {p["name"] for p in st.session_state.patients}
+        pool = [p for p in MOCK_INCOMING if p["name"] not in existing_names]
+        if pool:
+            try:
+                submit_mock_to_backend(random.choice(pool))
+            except Exception:
+                pass
+        st.session_state.last_arrival = datetime.now()
+
+    # Re-sync queue from backend on every auto-refresh cycle
+    if st.session_state.backend_available:
+        try:
+            sync_patients_from_backend()
+        except Exception:
+            pass
 
 # ── Header ────────────────────────────────────────────────────────────
 total    = len([p for p in st.session_state.patients if not p.get("seen")])
@@ -600,12 +766,14 @@ with st.sidebar:
                         )
                         patient["allocation"] = result
                         patient["allocated"]  = True
+                        # Persist allocation so it survives backend re-syncs
+                        st.session_state.allocations[patient["session_id"]] = result
                         dept = result["assigned_department"]
                         if dept in st.session_state.allotment:
                             current = st.session_state.allotment[dept]["available"]
                             st.session_state.allotment[dept]["available"] = max(0, current - 1)
                     except Exception as e:
-                        patient["allocation"] = {
+                        fallback = {
                             "final_priority": patient["esi_score"],
                             "assigned_department": "Unassigned",
                             "assigned_bed": "—",
@@ -613,7 +781,9 @@ with st.sidebar:
                             "escalation_required": False,
                             "required_grade": "Unknown",
                         }
-                        patient["allocated"] = True
+                        patient["allocation"] = fallback
+                        patient["allocated"]  = True
+                        st.session_state.allocations[patient["session_id"]] = fallback
 
             st.session_state.patients.sort(
                 key=lambda x: x["allocation"]["final_priority"]
@@ -626,7 +796,10 @@ with st.sidebar:
 
     # ── Live updates ──────────────────────────────────────────────────
     st.markdown("**Live Updates**")
-    st.caption("Simulates new patients arriving every 30 seconds.")
+    if st.session_state.get("backend_available", True):
+        st.caption("Polls backend every 5 s. Submits a new patient to the DB every 30 s.")
+    else:
+        st.caption("⚠️ Backend offline — running on local data only.")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("▶ Start", use_container_width=True,
@@ -719,7 +892,19 @@ for patient in active_patients:
             st.write("")
             if st.button("✅ Mark as Seen", key=f"seen_{patient['session_id']}",
                          use_container_width=True, type="primary"):
-                patient["seen"] = True
+                # Tell backend this patient is done (removes from queue)
+                if st.session_state.backend_available:
+                    try:
+                        mark_seen_on_backend(patient["session_id"])
+                    except Exception:
+                        pass
+                # Remove from local state and clean up allocation record
+                st.session_state.patients = [
+                    p for p in st.session_state.patients
+                    if p["session_id"] != patient["session_id"]
+                ]
+                st.session_state.allocations.pop(patient["session_id"], None)
+                # Free the bed
                 if alloc and alloc["assigned_department"] in st.session_state.allotment:
                     dept       = alloc["assigned_department"]
                     total_beds = st.session_state.allotment[dept]["total"]
