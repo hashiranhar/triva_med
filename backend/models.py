@@ -49,3 +49,7 @@ class Submission(Base):
     clinician_gender_preference   = Column(String, nullable=False)
     family_involvement            = Column(String, nullable=False)
     additional_notes              = Column(Text, nullable=True)
+
+    # dashboard state
+    seen       = Column(Boolean, default=False, nullable=True)
+    ai_summary = Column(JSON, nullable=True)

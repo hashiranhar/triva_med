@@ -124,3 +124,7 @@ class HealthResponse(BaseModel):
 class SessionResponse(BaseModel):
     session_id: UUID
     created_at: datetime
+
+
+class SummaryUpdate(BaseModel):
+    summary: dict

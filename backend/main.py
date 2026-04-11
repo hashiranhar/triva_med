@@ -10,6 +10,7 @@ from backend.schemas import (
     SessionResponse,
     PatientSubmission,
     SubmissionResponse,
+    SummaryUpdate,
 )
 from backend.database import engine, Base, get_db
 from backend import models
@@ -28,15 +29,19 @@ app.add_middleware(
 
 @app.on_event("startup")
 def run_migrations():
-    """Ensure any columns added after initial creation are present."""
-    with engine.connect() as conn:
-        result = conn.execute(text("PRAGMA table_info(submissions)"))
-        cols = [row[1] for row in result]
-        if "seen" not in cols:
-            conn.execute(
-                text("ALTER TABLE submissions ADD COLUMN seen BOOLEAN DEFAULT 0")
-            )
-            conn.commit()
+    """Drop and recreate tables if the schema has changed; otherwise add missing columns."""
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(engine)
+    if inspector.has_table("submissions"):
+        cols = [c["name"] for c in inspector.get_columns("submissions")]
+        # If the table is missing any key mental-health column, nuke and rebuild.
+        if "raw_concern_text" not in cols:
+            Base.metadata.drop_all(bind=engine)
+        elif "ai_summary" not in cols:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE submissions ADD COLUMN ai_summary JSON"))
+                conn.commit()
+    Base.metadata.create_all(bind=engine)
 
 
 def calculate_age(dob: date) -> int:
@@ -169,6 +174,17 @@ def get_archived_patients(db: DBSession = Depends(get_db)):
         .all()
     )
     return [_serialise(s) for s in submissions]
+
+
+@app.patch("/api/v1/submission/{session_id}/summary")
+def save_summary(session_id: str, body: SummaryUpdate, db: DBSession = Depends(get_db)):
+    """Store the AI-generated clinical summary produced by the dashboard."""
+    sub = db.query(models.Submission).filter_by(session_id=session_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    sub.ai_summary = body.summary
+    db.commit()
+    return {"status": "ok", "session_id": session_id}
 
 
 @app.patch("/api/v1/submission/{session_id}/seen")

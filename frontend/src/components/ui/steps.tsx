@@ -1,492 +1,342 @@
 import { CardTitle } from "./card"
-import FormField from "./form-field";
-
-import type { StepFormData } from "@/types";
-import type { useForm } from "react-hook-form";
-import { Label } from "./label";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "./select";
-import { Switch } from "./switch";
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "./field";
-import { useState } from "react";
-import { Icon } from "lucide-react";
+import FormField from "./form-field"
+import type { StepFormData } from "@/types"
+import type { useForm } from "react-hook-form"
+import { Label } from "./label"
+import {
+    Select, SelectContent, SelectGroup, SelectItem,
+    SelectLabel, SelectTrigger, SelectValue,
+} from "./select"
+import { useState } from "react"
 
 interface StepProps {
-    register: ReturnType<typeof useForm<StepFormData>>["register"];
-    errors: Record<string, { message?: string }>;
-    setValue?: ReturnType<typeof useForm<StepFormData>>["setValue"];
+    register:  ReturnType<typeof useForm<StepFormData>>["register"]
+    errors:    Record<string, { message?: string }>
+    setValue?: ReturnType<typeof useForm<StepFormData>>["setValue"]
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────
+
+const BoolSelect = ({
+    label, field, setValue, errors,
+}: {
+    label: string
+    field: string
+    setValue?: StepProps["setValue"]
+    errors: StepProps["errors"]
+}) => {
+    const [val, setVal] = useState("")
+    return (
+        <div className="space-y-2">
+            <Label htmlFor={field}>{label}</Label>
+            <Select onValueChange={(v) => {
+                setVal(v)
+                setValue?.(field as never, (v === "true") as never, { shouldValidate: true })
+            }} value={val}>
+                <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Select..." />
+                </SelectTrigger>
+                <SelectContent>
+                    <SelectGroup>
+                        <SelectItem value="true">Yes</SelectItem>
+                        <SelectItem value="false">No</SelectItem>
+                    </SelectGroup>
+                </SelectContent>
+            </Select>
+            {errors[field] && <p className="text-sm text-destructive">{errors[field].message}</p>}
+        </div>
+    )
+}
+
+// ── Mental health symptom list (matches backend MHSymptom enum) ────────
+
+const SYMPTOMS: { key: string; label: string }[] = [
+    { key: "sad_or_hopeless",            label: "Sad or hopeless" },
+    { key: "anxiety_or_panic",           label: "Anxiety / panic" },
+    { key: "difficulty_sleeping",        label: "Difficulty sleeping" },
+    { key: "hearing_or_seeing_things",   label: "Hearing / seeing things" },
+    { key: "thoughts_of_self_harm",      label: "Thoughts of self-harm" },
+    { key: "thoughts_of_harming_others", label: "Thoughts of harming others" },
+    { key: "difficulty_eating",          label: "Difficulty eating" },
+    { key: "feeling_disconnected",       label: "Feeling disconnected" },
+    { key: "overwhelming_anger",         label: "Overwhelming anger" },
+    { key: "substance_use",              label: "Substance use concerns" },
+]
+
+// ── Step 1 — About You ─────────────────────────────────────────────────
+
 const PersonalInfoStep = ({ register, errors, setValue }: StepProps) => {
-    const [gender, setGender] = useState("")
-    const [language, setLanguage] = useState("")
+    const [gender,    setGender]    = useState("")
+    const [language,  setLanguage]  = useState("")
+    const [interp,    setInterp]    = useState("")
 
     return (
         <div className="space-y-5">
-            <CardTitle className="text-x1">About You</CardTitle>
-
+            <CardTitle className="text-xl">About You</CardTitle>
             <div className="grid grid-cols-1 gap-5">
 
-                <FormField
-                    id="firstName"
-                    label="First Name"
-                    register={register}
-                    errors={errors}
-                />
-                <FormField
-                    id="lastName"
-                    label="Last Name"
-                    register={register}
-                    errors={errors}
-                />
-
-
-
-                <FormField
-                    id="age"
-                    label="Age"
-                    register={register}
-                    errors={errors}
-                    type="number"
-                />
-
-
+                <FormField id="firstName"   label="First Name"    register={register} errors={errors} />
+                <FormField id="lastName"    label="Last Name"     register={register} errors={errors} />
+                <FormField id="dateOfBirth" label="Date of Birth" register={register} errors={errors} type="date" />
 
                 <div className="space-y-2">
-                    <Label htmlFor="gender">Select Gender</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("gender", value as Extract<StepFormData, { gender: string }>["gender"], { shouldValidate: true });
-                        setGender(value)
-                    }} value={gender}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select Gender" />
-                        </SelectTrigger>
+                    <Label>Gender</Label>
+                    <Select onValueChange={(v) => { setGender(v); setValue?.("gender", v as never, { shouldValidate: true }) }} value={gender}>
+                        <SelectTrigger className="w-[220px]"><SelectValue placeholder="Select gender" /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Gender Options</SelectLabel>
-                                <SelectItem value="Male">Male</SelectItem>
-                                <SelectItem value="Female">Female</SelectItem>
-                                <SelectItem value="Other">Other</SelectItem>
+                                <SelectLabel>Gender</SelectLabel>
+                                <SelectItem value="male">Male</SelectItem>
+                                <SelectItem value="female">Female</SelectItem>
+                                <SelectItem value="non_binary">Non-binary</SelectItem>
+                                <SelectItem value="prefer_not_to_say">Prefer not to say</SelectItem>
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.gender && (
-                        <p>{errors.gender.message}</p>
-                    )}
+                    {errors.gender && <p className="text-sm text-destructive">{errors.gender.message}</p>}
                 </div>
 
                 <div className="space-y-2">
-                    <Label htmlFor="language">Preferred Language</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("language", value as Extract<StepFormData, { language: string }>["language"], { shouldValidate: true });
-                        setLanguage(value)
-                    }} value={language}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select Language" />
-                        </SelectTrigger>
+                    <Label>Preferred Language</Label>
+                    <Select onValueChange={(v) => { setLanguage(v); setValue?.("preferredLanguage", v as never, { shouldValidate: true }) }} value={language}>
+                        <SelectTrigger className="w-[220px]"><SelectValue placeholder="Select language" /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Languages</SelectLabel>
-                                <SelectItem value="EN">English</SelectItem>
-                                <SelectItem value="ES">Español</SelectItem>
-                                <SelectItem value="AR">عربي</SelectItem>
+                                <SelectLabel>Language</SelectLabel>
+                                <SelectItem value="en">English</SelectItem>
+                                <SelectItem value="es">Español</SelectItem>
+                                <SelectItem value="ar">عربي</SelectItem>
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.language && (
-                        <p>{errors.language.message}</p>
-                    )}
+                    {errors.preferredLanguage && <p className="text-sm text-destructive">{errors.preferredLanguage.message}</p>}
                 </div>
 
                 <div className="space-y-2">
-                    <Label htmlFor="interpreterNeeded">Interpreter Required</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("interpreterNeeded", value as Extract<StepFormData, { interpreterNeeded: string }>["interpreterNeeded"], { shouldValidate: true });
-                        setLanguage(value)
-                    }} value={language}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Interpreter Needed?" />
-                        </SelectTrigger>
+                    <Label>Do you need an interpreter?</Label>
+                    <Select onValueChange={(v) => { setInterp(v); setValue?.("interpreterNeeded", (v === "true") as never, { shouldValidate: true }) }} value={interp}>
+                        <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select..." /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Interpreter Needed?</SelectLabel>
-                                <SelectItem value="Yes">Yes</SelectItem>
-                                <SelectItem value="No">No</SelectItem>
-
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.interpreterNeeded && (
-                        <p>{errors.interpreterNeeded.message}</p>
-                    )}
-                </div>
-
-
-
-
-                {/* <FormField
-                    id="interpreterNeeded"
-                    label="Do you need an interpreter (Yes/No)"
-                    register={register}
-                    errors={errors}
-                />
-
-                <div className="space-y-2">
-                    <Label htmlFor="interpreterNeeded">Do you require an Interpreter</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("interpreterNeeded", value as Extract<StepFormData, { interpreterNeeded: string }>["interpreterNeeded"]);
-                    }}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Yes/No" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Interpreter Required?</SelectLabel>
                                 <SelectItem value="true">Yes</SelectItem>
                                 <SelectItem value="false">No</SelectItem>
                             </SelectGroup>
                         </SelectContent>
                     </Select>
+                    {errors.interpreterNeeded && <p className="text-sm text-destructive">{errors.interpreterNeeded.message}</p>}
+                </div>
 
-                    {errors.interpreterNeeded && (
-                        <p>{errors.interpreterNeeded.message}</p>
-                    )}
-                </div> */}
-                {/* 
-                <div>
-                    <FieldGroup className="w-full max-w-sm">
-                        <FieldLabel htmlFor="switch-share">
-                            <Field orientation="horizontal">
-                                <FieldContent>
-                                    <FieldTitle>Enable for Interpreter</FieldTitle>
-                                    <FieldDescription>
-                                        Enable this switch if you would like an interpreter during your consultation
-                                    </FieldDescription>
-                                </FieldContent>
-                                <Switch id="switch-share" />
-                            </Field>
-                        </FieldLabel>
-                    </FieldGroup>
-                </div> */}
             </div>
         </div>
     )
 }
+
+// ── Step 2 — Your Concern ──────────────────────────────────────────────
+
 const ReasonInfoStep = ({ register, errors, setValue }: StepProps) => {
-    const [started, setStarted] = useState("")
-    const [hadBefore, setHadBefore] = useState("")
-    const [emergency, setEmergency] = useState("")
+    const [onset,   setOnset]   = useState("")
+    const [prevEp,  setPrevEp]  = useState("")
+    const [crisis,  setCrisis]  = useState("")
 
     return (
         <div className="space-y-4">
-            <CardTitle className="text-x1">What Brought You Here Today?</CardTitle>
-
+            <CardTitle className="text-xl">Your Concern</CardTitle>
             <div className="grid grid-cols-1 gap-5">
+
                 <FormField
-                    id="ownWords"
-                    label="In your own words please describe what is the concern"
+                    id="rawConcernText"
+                    label="In your own words, what has brought you here today?"
                     register={register}
                     errors={errors}
                 />
 
                 <div className="space-y-2">
-                    <Label htmlFor="started">When did you start feeling this way?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("started", value as Extract<StepFormData, { started: string }>["started"], { shouldValidate: true });
-                        setStarted(value)
-                    }} value={started}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
+                    <Label>How long have you been feeling this way?</Label>
+                    <Select onValueChange={(v) => { setOnset(v); setValue?.("onset", v as never, { shouldValidate: true }) }} value={onset}>
+                        <SelectTrigger className="w-[240px]"><SelectValue placeholder="Select..." /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="Today">Today</SelectItem>
-                                <SelectItem value="This Week">This Week</SelectItem>
-                                <SelectItem value="This Month">This Month</SelectItem>
-                                <SelectItem value="Longer than a Month">Longer than a Month</SelectItem>
+                                <SelectLabel>Duration</SelectLabel>
+                                <SelectItem value="today">Today</SelectItem>
+                                <SelectItem value="this_week">This week</SelectItem>
+                                <SelectItem value="this_month">This month</SelectItem>
+                                <SelectItem value="longer">Longer than a month</SelectItem>
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.started && (
-                        <p>{errors.started.message}</p>
-                    )}
-                </div>
-                <div className="space-y-2">
-                    <Label htmlFor="hadBefore">Have you felt this way before?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("hadBefore", value as Extract<StepFormData, { hadBefore: string }>["hadBefore"], { shouldValidate: true });
-                        setHadBefore(value)
-                    }} value={started}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="Yes">Yes</SelectItem>
-                                <SelectItem value="No">No</SelectItem>
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.hadBefore && (
-                        <p>{errors.hadBefore.message}</p>
-                    )}
+                    {errors.onset && <p className="text-sm text-destructive">{errors.onset.message}</p>}
                 </div>
 
+                <BoolSelect label="Have you felt this way before?" field="previousEpisode" setValue={setValue} errors={errors} />
                 <div className="space-y-2">
-                    <Label htmlFor="emergency">Have you felt this way before?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("emergency", value as Extract<StepFormData, { emergency: string }>["emergency"], { shouldValidate: true });
-                        setEmergency(value)
-                    }} value={started}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
+                    <Label>Are you in crisis right now?</Label>
+                    <Select onValueChange={(v) => { setCrisis(v); setValue?.("isCrisis", (v === "true") as never, { shouldValidate: true }) }} value={crisis}>
+                        <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select..." /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>How serious would you rate this concern</SelectLabel>
-                                <SelectItem value="No">0-3</SelectItem>
-                                <SelectItem value="No">4-7</SelectItem>
-                                <SelectItem value="Yes">8-10</SelectItem>
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.emergency && (
-                        <p>{errors.emergency.message}</p>
-                    )}
-                </div>
-            </div>
-        </div>
-    )
-}
-const FeelingInfoStep = ({ register, errors, setValue }: StepProps) => {
-    const [feeling, setFeeling] = useState("")
-    const [affectOnLife, setAffectOnLife] = useState("")
-
-    return (
-        <div className="space-y-4">
-            <CardTitle className="text-x1">What Brought You Here Today?</CardTitle>
-
-            <div className="grid grid-cols-1 gap-5">
-                <div className="space-y-2">
-                    <Label htmlFor="feeling">How are you feeling on a scale of 1-5</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("feeling", value as Extract<StepFormData, { feeling: string }>["feeling"], { shouldValidate: true });
-                        setFeeling(value)
-                    }} value={feeling}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="1">1</SelectItem>
-                                <SelectItem value="2">2</SelectItem>
-                                <SelectItem value="3">3</SelectItem>
-                                <SelectItem value="4">4</SelectItem>
-                                <SelectItem value="5">5</SelectItem>
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.feeling && (
-                        <p>{errors.feeling.message}</p>
-                    )}
-                </div>
-                <FormField
-                    id="checklist"
-                    label="Please write down the experiences you have been feeling lately, seperated by commas. (e.g. Happy, Troubles, Stressed, etc...) "
-                    register={register}
-                    errors={errors}
-                />
-                <div className="space-y-2">
-                    <Label htmlFor="affectOnLife">How does this affect your daily life</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("affectOnLife", value as Extract<StepFormData, { affectOnLife: string }>["affectOnLife"], { shouldValidate: true });
-                        setAffectOnLife(value)
-                    }} value={affectOnLife}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="not at all">not at all</SelectItem>
-                                <SelectItem value="a little">a little</SelectItem>
-                                <SelectItem value="a lot">a lot</SelectItem>
-                                <SelectItem value="I can't function">4</SelectItem>
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.affectOnLife && (
-                        <p>{errors.affectOnLife.message}</p>
-                    )}
-                </div>
-            </div>
-        </div>
-    )
-}
-const BackgroundInfoStep = ({ register, errors, setValue }: StepProps) => {
-    const [therapist, setTherapist] = useState("")
-    const [hospitalVisitBefore, setHospitalVisitBefore] = useState("")
-
-    return (
-        <div className="space-y-4">
-            <CardTitle className="text-x1">Your Background</CardTitle>
-
-            <div className="grid grid-cols-1 gap-5">
-                <div className="space-y-2">
-                    <Label htmlFor="therapist">Have you ever been to a therapist?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("therapist", value as Extract<StepFormData, { therapist: string }>["therapist"], { shouldValidate: true });
-                        setTherapist(value)
-                    }} value={therapist}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
                                 <SelectItem value="true">Yes</SelectItem>
                                 <SelectItem value="false">No</SelectItem>
-
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.therapist && (
-                        <p>{errors.therapist.message}</p>
-                    )}
+                    {errors.isCrisis && <p className="text-sm text-destructive">{errors.isCrisis.message}</p>}
                 </div>
 
-                <FormField
-                    id="medicationEnquiry"
-                    label="Are you taking mental health medications?"
-                    register={register}
-                    errors={errors}
-                />
-
-                <FormField
-                    id="additionalMedicationEnquiry"
-                    label="Any other medical conditions? "
-                    register={register}
-                    errors={errors}
-                />
-
-                <FormField
-                    id="allergiesEnquiry"
-                    label="Any allergies? "
-                    register={register}
-                    errors={errors}
-                />
-
-                <div className="space-y-2">
-                    <Label htmlFor="hospitalVisitBefore">Have you ever been to the hospital due to this?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("hospitalVisitBefore", value as Extract<StepFormData, { hospitalVisitBefore: string }>["hospitalVisitBefore"], { shouldValidate: true });
-                        setHospitalVisitBefore(value)
-                    }} value={hospitalVisitBefore}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="Yes">Yes</SelectItem>
-                                <SelectItem value="No">No</SelectItem>
-
-                            </SelectGroup>
-                        </SelectContent>
-                    </Select>
-
-                    {errors.hospitalVisitBefore && (
-                        <p>{errors.hospitalVisitBefore.message}</p>
-                    )}
-                </div>
             </div>
         </div>
     )
 }
-const PersonalNeedsInfoStep = ({ register, errors, setValue }: StepProps) => {
-    const [preferredClinicianGender, setPreferredClinicianGender] = useState("")
-    const [familyAssistanceRequired, setFamilyAssistanceRequired] = useState("")
+
+// ── Step 3 — Symptoms ──────────────────────────────────────────────────
+
+const FeelingInfoStep = ({ errors, setValue }: StepProps) => {
+    const [selected, setSelected] = useState<Set<string>>(new Set())
+    const [distress,  setDistress]  = useState("")
+    const [impact,    setImpact]    = useState("")
+
+    const toggleSymptom = (key: string) => {
+        const next = new Set(selected)
+        if (next.has(key)) next.delete(key); else next.add(key)
+        setSelected(next)
+        setValue?.("symptoms", Array.from(next).join(",") as never, { shouldValidate: true })
+    }
 
     return (
         <div className="space-y-4">
-            <CardTitle className="text-x1">Your Background</CardTitle>
-
-            <FormField
-                    id="personalFactors"
-                    label="Are there any religious, cultural, or personal factors you'd like the care team to know?"
-                    register={register}
-                    errors={errors}
-                />
-
+            <CardTitle className="text-xl">How Are You Feeling?</CardTitle>
             <div className="grid grid-cols-1 gap-5">
+
                 <div className="space-y-2">
-                    <Label htmlFor="preferredClinicianGender">Please select your prefered clinician gender</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("preferredClinicianGender", value as Extract<StepFormData, { preferredClinicianGender: string }>["preferredClinicianGender"], { shouldValidate: true });
-                        setPreferredClinicianGender(value)
-                    }} value={preferredClinicianGender}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
+                    <Label>Which of the following have you been experiencing? (select all that apply)</Label>
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                        {SYMPTOMS.map(({ key, label }) => (
+                            <label key={key} className="flex items-center gap-2 cursor-pointer text-sm">
+                                <input
+                                    type="checkbox"
+                                    checked={selected.has(key)}
+                                    onChange={() => toggleSymptom(key)}
+                                    className="rounded"
+                                />
+                                {label}
+                            </label>
+                        ))}
+                    </div>
+                    {errors.symptoms && <p className="text-sm text-destructive">{errors.symptoms.message}</p>}
+                </div>
+
+                <div className="space-y-2">
+                    <Label>Distress level (1 = low, 5 = severe)</Label>
+                    <Select onValueChange={(v) => { setDistress(v); setValue?.("distressLevel", Number(v) as never, { shouldValidate: true }) }} value={distress}>
+                        <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select 1–5" /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="Male">Male</SelectItem>
-                                <SelectItem value="Female">Female</SelectItem>
-
+                                <SelectLabel>Distress Level</SelectLabel>
+                                {[1, 2, 3, 4, 5].map(n => (
+                                    <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                                ))}
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.preferredClinicianGender && (
-                        <p>{errors.preferredClinicianGender.message}</p>
-                    )}
+                    {errors.distressLevel && <p className="text-sm text-destructive">{errors.distressLevel.message}</p>}
                 </div>
 
-
                 <div className="space-y-2">
-                    <Label htmlFor="familyAssistanceRequired">Would you like a family member or support person(s) involved in your care?</Label>
-                    <Select onValueChange={(value) => {
-                        setValue?.("familyAssistanceRequired", value as Extract<StepFormData, { familyAssistanceRequired: string }>["familyAssistanceRequired"], { shouldValidate: true });
-                        setFamilyAssistanceRequired(value)
-                    }} value={familyAssistanceRequired}>
-                        <SelectTrigger className="w-[180px]">
-                            <SelectValue placeholder="Select One" />
-                        </SelectTrigger>
+                    <Label>How much does this affect your daily life?</Label>
+                    <Select onValueChange={(v) => { setImpact(v); setValue?.("dailyImpact", v as never, { shouldValidate: true }) }} value={impact}>
+                        <SelectTrigger className="w-[240px]"><SelectValue placeholder="Select..." /></SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectLabel>Please select one from the following</SelectLabel>
-                                <SelectItem value="Yes">Yes</SelectItem>
-                                <SelectItem value="No">No</SelectItem>
-                                <SelectItem value="Not Yet">Not Yet</SelectItem>
+                                <SelectLabel>Daily Impact</SelectLabel>
+                                <SelectItem value="not_at_all">Not at all</SelectItem>
+                                <SelectItem value="a_little">A little</SelectItem>
+                                <SelectItem value="a_lot">A lot</SelectItem>
+                                <SelectItem value="cannot_function">I cannot function</SelectItem>
                             </SelectGroup>
                         </SelectContent>
                     </Select>
-
-                    {errors.familyAssistanceRequired && (
-                        <p>{errors.familyAssistanceRequired.message}</p>
-                    )}
+                    {errors.dailyImpact && <p className="text-sm text-destructive">{errors.dailyImpact.message}</p>}
                 </div>
-                <FormField
-                    id="additionalInfo"
-                    label="Any additional information you would like to provide? "
-                    register={register}
-                    errors={errors}
-                />
+
             </div>
         </div>
     )
 }
 
-export { PersonalInfoStep, ReasonInfoStep, FeelingInfoStep, BackgroundInfoStep, PersonalNeedsInfoStep };
+// ── Step 4 — Clinical Background ───────────────────────────────────────
+
+const BackgroundInfoStep = ({ register, errors, setValue }: StepProps) => (
+    <div className="space-y-4">
+        <CardTitle className="text-xl">Your Background</CardTitle>
+        <div className="grid grid-cols-1 gap-5">
+            <BoolSelect label="Are you currently seeing a therapist or mental health professional?" field="currentTreatment"   setValue={setValue} errors={errors} />
+            <FormField  id="currentMedications" label="Mental health medications (comma-separated, or leave blank)" register={register} errors={errors} />
+            <FormField  id="otherConditions"    label="Other medical conditions (comma-separated, or leave blank)"  register={register} errors={errors} />
+            <FormField  id="allergies"          label="Allergies (comma-separated, or leave blank)"                 register={register} errors={errors} />
+            <BoolSelect label="Have you ever been hospitalised for a mental health reason?" field="previousMhHospital" setValue={setValue} errors={errors} />
+        </div>
+    </div>
+)
+
+// ── Step 5 — Cultural Needs ────────────────────────────────────────────
+
+const PersonalNeedsInfoStep = ({ register, errors, setValue }: StepProps) => {
+    const [clinGender,   setClinicianGender]    = useState("")
+    const [familyInvolv, setFamilyInvolvement]  = useState("")
+
+    return (
+        <div className="space-y-4">
+            <CardTitle className="text-xl">Cultural &amp; Personal Needs</CardTitle>
+            <div className="grid grid-cols-1 gap-5">
+
+                <FormField
+                    id="culturalNotes"
+                    label="Any religious, cultural, or personal factors you'd like the care team to know? (optional)"
+                    register={register}
+                    errors={errors}
+                />
+
+                <div className="space-y-2">
+                    <Label>Preferred clinician gender</Label>
+                    <Select onValueChange={(v) => { setClinicianGender(v); setValue?.("clinicianGenderPreference", v as never, { shouldValidate: true }) }} value={clinGender}>
+                        <SelectTrigger className="w-[220px]"><SelectValue placeholder="Select..." /></SelectTrigger>
+                        <SelectContent>
+                            <SelectGroup>
+                                <SelectLabel>Clinician gender preference</SelectLabel>
+                                <SelectItem value="male">Male</SelectItem>
+                                <SelectItem value="female">Female</SelectItem>
+                                <SelectItem value="no_preference">No preference</SelectItem>
+                            </SelectGroup>
+                        </SelectContent>
+                    </Select>
+                    {errors.clinicianGenderPreference && <p className="text-sm text-destructive">{errors.clinicianGenderPreference.message}</p>}
+                </div>
+
+                <div className="space-y-2">
+                    <Label>Would you like a family member or support person involved in your care?</Label>
+                    <Select onValueChange={(v) => { setFamilyInvolvement(v); setValue?.("familyInvolvement", v as never, { shouldValidate: true }) }} value={familyInvolv}>
+                        <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select..." /></SelectTrigger>
+                        <SelectContent>
+                            <SelectGroup>
+                                <SelectLabel>Family involvement</SelectLabel>
+                                <SelectItem value="yes">Yes</SelectItem>
+                                <SelectItem value="no">No</SelectItem>
+                                <SelectItem value="not_now">Not right now</SelectItem>
+                            </SelectGroup>
+                        </SelectContent>
+                    </Select>
+                    {errors.familyInvolvement && <p className="text-sm text-destructive">{errors.familyInvolvement.message}</p>}
+                </div>
+
+                <FormField
+                    id="additionalNotes"
+                    label="Anything else you'd like to share? (optional)"
+                    register={register}
+                    errors={errors}
+                />
+
+            </div>
+        </div>
+    )
+}
+
+export { PersonalInfoStep, ReasonInfoStep, FeelingInfoStep, BackgroundInfoStep, PersonalNeedsInfoStep }
