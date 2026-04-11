@@ -1,10 +1,10 @@
-
+import MultiStepForm from "./components/ui/multi-step-form"
 
 function App() {
 
   return (
     <div>
-      <h1>LinguaCare</h1>
+      <MultiStepForm />
     </div>
   )
 }
