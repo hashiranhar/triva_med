@@ -15,7 +15,7 @@ load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(
-    page_title="RefugeesMH — Clinician Dashboard",
+    page_title="linguaCare — Clinician Dashboard",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -617,7 +617,7 @@ need_interp = sum(1 for p in active if p.get("interpreter_needed"))
 st.markdown(f"""
 <div class="header-bar">
     <div>
-        <p class="header-title">🧠 RefugeesMH — Clinician Dashboard</p>
+        <p class="header-title">🧠 linguaCare — Clinician Dashboard</p>
         <p class="header-sub">Mental Health Intake Queue · Clinician View</p>
     </div>
     <div style="display:flex; gap:10px; align-items:center;">

@@ -17,7 +17,7 @@ from backend import models
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="RefugeesMH Backend")
+app = FastAPI(title="linguaCare Backend")
 
 app.add_middleware(
     CORSMiddleware,

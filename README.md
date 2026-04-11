@@ -1,4 +1,4 @@
-# RefugeesMH
+# linguaCare
 
 A mental health intake and triage platform for refugee patients.
 
