@@ -1,11 +1,11 @@
 import MultiStepForm from "./components/ui/multi-step-form"
+import { LanguageProvider } from "./context/LanguageContext"
 
 function App() {
-
   return (
-    <div>
+    <LanguageProvider>
       <MultiStepForm />
-    </div>
+    </LanguageProvider>
   )
 }
 
