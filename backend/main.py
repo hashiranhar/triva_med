@@ -159,6 +159,18 @@ def get_patient_queue(db: DBSession = Depends(get_db)):
     return [_serialise(s) for s in submissions]
 
 
+@app.get("/api/v1/archive")
+def get_archived_patients(db: DBSession = Depends(get_db)):
+    """Returns all seen (archived) submissions ordered by submission time (newest first)."""
+    submissions = (
+        db.query(models.Submission)
+        .filter(models.Submission.seen == True)
+        .order_by(models.Submission.submitted_at.desc())
+        .all()
+    )
+    return [_serialise(s) for s in submissions]
+
+
 @app.patch("/api/v1/submission/{session_id}/seen")
 def mark_patient_seen(session_id: str, db: DBSession = Depends(get_db)):
     sub = db.query(models.Submission).filter_by(session_id=session_id).first()

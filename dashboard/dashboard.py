@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import anthropic
 import json
 import os
+import re
 import time
 import uuid
 import random
@@ -425,6 +426,11 @@ def submit_seed(seed: dict) -> bool:
     r.raise_for_status()
     return True
 
+def fetch_archive() -> list:
+    resp = requests.get(f"{BACKEND_URL}/api/v1/archive", timeout=5)
+    resp.raise_for_status()
+    return resp.json()
+
 def sync_from_backend():
     records = fetch_queue()
     patients = []
@@ -436,6 +442,20 @@ def sync_from_backend():
         patients.append(p)
     patients.sort(key=lambda x: (x["priority"], x["submitted_at"]))
     st.session_state.patients = patients
+
+def fetch_and_format_archive() -> list:
+    try:
+        records = fetch_archive()
+        archived = []
+        for r in records:
+            p = dict(r)
+            p["submitted_at"] = datetime.fromisoformat(r["submitted_at"])
+            p["priority"]     = compute_priority(p)
+            p["summary"]      = st.session_state.get("summaries", {}).get(p["session_id"])
+            archived.append(p)
+        return archived
+    except Exception:
+        return []
 
 # ── AI summary ─────────────────────────────────────────────────────────
 
@@ -503,12 +523,42 @@ Return ONLY a valid JSON object with no markdown or extra text:
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
-    raw = response.content[0].text.strip()
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        result = {"error": f"Unexpected response: {raw[:200]}"}
-    return result
+    raw_parts = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if text:
+            raw_parts.append(text.strip())
+
+    raw = "\n".join(part for part in raw_parts if part).strip()
+    if not raw:
+        raw = str(response)
+
+    candidates = []
+    candidates.append(raw)
+
+    # Common Anthropic formatting: JSON wrapped in markdown code fences.
+    no_fence = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    no_fence = re.sub(r"\s*```$", "", no_fence).strip()
+    if no_fence and no_fence not in candidates:
+        candidates.append(no_fence)
+
+    # Last-resort extraction: parse the first JSON object-shaped segment.
+    obj_match = re.search(r"\{[\s\S]*\}", no_fence)
+    if obj_match:
+        extracted = obj_match.group(0).strip()
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            last_error = f"{e.msg} at pos {e.pos}"
+
+    return {
+        "error": f"Unexpected response format ({last_error or 'invalid JSON'}): {raw[:300]}"
+    }
 
 # ── Session state init ─────────────────────────────────────────────────
 
@@ -658,12 +708,8 @@ with st.sidebar:
 
 # ── Queue ───────────────────────────────────────────────────────────────
 
-st.markdown('<p class="section-label">Patient Queue</p>', unsafe_allow_html=True)
-
-if not active:
-    st.info("No patients currently in the queue.")
-
-for patient in active:
+def display_patient_card(patient: dict, is_archived: bool = False):
+    """Display a single patient card with full details and actions."""
     pri    = patient["priority"]
     flags  = safety_flags(patient)
     ago    = time_ago(patient["submitted_at"])
@@ -672,11 +718,13 @@ for patient in active:
 
     # Build badge row
     badge_html = f'<span class="badge {PRIORITY_BADGE[pri]}">{PRIORITY_LABELS[pri]}</span>'
-    if is_new:
+    if is_new and not is_archived:
         badge_html += '<span class="badge badge-new">NEW</span>'
     if patient.get("interpreter_needed"):
         badge_html += '<span class="badge badge-interpreter">🗣 Interpreter</span>'
     badge_html += f'<span class="badge badge-language">{LANGUAGE_FLAGS.get(lang, lang)}</span>'
+    if is_archived:
+        badge_html += '<span class="badge" style="background:#95A5A6; color:white;">📦 Archived</span>'
     for f in flags:
         if "self-harm" in f.lower():
             badge_html += '<span class="badge badge-selfharm">⚠ Self-harm</span>'
@@ -790,7 +838,7 @@ for patient in active:
             st.write(f"Arrived: {patient['submitted_at'].strftime('%H:%M')}")
             st.write("")
 
-            if not patient.get("summary"):
+            if not is_archived and not patient.get("summary"):
                 if st.button("🤖 Summarise", key=f"sum_{patient['session_id']}",
                              use_container_width=True):
                     with st.spinner("Summarising..."):
@@ -805,19 +853,45 @@ for patient in active:
                     st.rerun()
 
             st.write("")
-            if st.button("✅ Mark as Seen", key=f"seen_{patient['session_id']}",
-                         use_container_width=True, type="primary"):
-                if st.session_state.backend_available:
-                    try:
-                        mark_seen(patient["session_id"])
-                    except Exception:
-                        pass
-                st.session_state.patients = [
-                    p for p in st.session_state.patients
-                    if p["session_id"] != patient["session_id"]
-                ]
-                st.session_state.summaries.pop(patient["session_id"], None)
-                st.rerun()
+            if not is_archived:
+                if st.button("✅ Mark as Seen", key=f"seen_{patient['session_id']}",
+                             use_container_width=True, type="primary"):
+                    if st.session_state.backend_available:
+                        try:
+                            mark_seen(patient["session_id"])
+                        except Exception:
+                            pass
+                    st.session_state.patients = [
+                        p for p in st.session_state.patients
+                        if p["session_id"] != patient["session_id"]
+                    ]
+                    st.session_state.summaries.pop(patient["session_id"], None)
+                    st.rerun()
+            else:
+                st.info("📦 This record is archived")
+
+
+st.markdown('<p class="section-label">Patient Queue & Archive</p>', unsafe_allow_html=True)
+
+tab_queue, tab_archive = st.tabs(["🔴 Active Queue", "📦 Archive"])
+
+with tab_queue:
+    if not active:
+        st.info("No patients currently in the queue.")
+    else:
+        st.caption(f"{len(active)} patient(s) waiting")
+        for patient in active:
+            display_patient_card(patient, is_archived=False)
+
+with tab_archive:
+    archived = fetch_and_format_archive()
+    if not archived:
+        st.info("No archived records yet.")
+    else:
+        st.caption(f"{len(archived)} archived record(s)")
+        for patient in archived:
+            display_patient_card(patient, is_archived=True)
+
 
 # ── Auto-refresh loop ──────────────────────────────────────────────────
 
